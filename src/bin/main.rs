@@ -14,6 +14,7 @@ use esp_wifi::{esp_now::BROADCAST_ADDRESS, init};
 
 #[entry]
 fn main() -> ! {
+    let start = time::now();
     esp_println::logger::init_logger_from_env();
 
     let peripherals = esp_hal::init({
@@ -38,17 +39,15 @@ fn main() -> ! {
 
     println!("esp-now version {}", esp_now.version().unwrap());
 
-    let mut next_send_time = time::now() + Duration::secs(5);
-    loop {
-        if time::now() >= next_send_time {
-            next_send_time = time::now() + Duration::secs(5);
-            println!("Send");
+    let status = esp_now
+        .send(&BROADCAST_ADDRESS, b"0123456789")
+        .unwrap()
+        .wait();
+    println!("Send broadcast status: {:?}", status);
 
-            let status = esp_now
-                .send(&BROADCAST_ADDRESS, b"0123456789")
-                .unwrap()
-                .wait();
-            println!("Send broadcast status: {:?}", status)
-        }
-    }
+    let duration: u64 = time::now().checked_duration_since(start).unwrap().ticks();
+
+    println!("took {}ms", duration / 1000);
+
+    loop {}
 }
