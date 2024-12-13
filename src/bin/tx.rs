@@ -15,14 +15,16 @@ use esp_wifi::{esp_now::BROADCAST_ADDRESS, init};
 
 #[entry]
 fn main() -> ! {
-    let start = esp_hal::time::now();
     esp_println::logger::init_logger_from_env();
 
     let peripherals = esp_hal::init({
         let mut config = esp_hal::Config::default();
-        config.cpu_clock = CpuClock::Clock160MHz; // underclock
+        config.cpu_clock = CpuClock::max();
+
         config
     });
+
+    let mut led = Output::new(peripherals.GPIO15, Level::High);
 
     esp_alloc::heap_allocator!(72 * 1024);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -34,26 +36,18 @@ fn main() -> ! {
     )
     .unwrap();
 
+    // Broadcast measurement via ESP-NOW
     let wifi = peripherals.WIFI;
     let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-
-    println!("esp-now version {}", esp_now.version().unwrap());
-
     let status = esp_now
         .send(&BROADCAST_ADDRESS, b"0123456789")
         .unwrap()
         .wait();
     println!("Send broadcast status: {:?}", status);
 
-    let duration: u64 = esp_hal::time::now()
-        .checked_duration_since(start)
-        .unwrap()
-        .ticks();
-
-    println!("took {}ms", duration / 1000);
-
     // enter deep sleep;
     let mut rtc = Rtc::new(peripherals.LPWR);
     let src = TimerWakeupSource::new(core::time::Duration::from_secs(2));
+    led.set_low();
     rtc.sleep_deep(&[&src]);
 }
