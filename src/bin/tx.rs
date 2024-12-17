@@ -11,7 +11,9 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_println::println;
-use esp_wifi::{esp_now::BROADCAST_ADDRESS, init};
+use esp_wifi::esp_now::BROADCAST_ADDRESS;
+
+const RX_ADDRESS: [u8; 6] = [0xf0u8, 0xf5u8, 0xbdu8, 0x2bu8, 0xabu8, 0xe4u8];
 
 #[entry]
 fn main() -> ! {
@@ -29,7 +31,7 @@ fn main() -> ! {
     esp_alloc::heap_allocator!(72 * 1024);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let init = init(
+    let init = esp_wifi::init(
         timg0.timer0,
         Rng::new(peripherals.RNG),
         peripherals.RADIO_CLK,
@@ -39,15 +41,17 @@ fn main() -> ! {
     // Broadcast measurement via ESP-NOW
     let wifi = peripherals.WIFI;
     let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
+
+    let t_meas: f64 = 12.0;
     let status = esp_now
-        .send(&BROADCAST_ADDRESS, b"0123456789")
+        .send(&BROADCAST_ADDRESS, &t_meas.to_le_bytes())
         .unwrap()
         .wait();
     println!("Send broadcast status: {:?}", status);
 
     // enter deep sleep;
     let mut rtc = Rtc::new(peripherals.LPWR);
-    let src = TimerWakeupSource::new(core::time::Duration::from_secs(2));
+    let wake_src = TimerWakeupSource::new(core::time::Duration::from_secs(2));
     led.set_low();
-    rtc.sleep_deep(&[&src]);
+    rtc.sleep_deep(&[&wake_src]);
 }
