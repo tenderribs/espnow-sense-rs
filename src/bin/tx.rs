@@ -13,7 +13,8 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::esp_now::BROADCAST_ADDRESS;
 
-const SLEEP_DURATION: u64 = 2;
+// Log every 5 mins
+const SLEEP_DURATION_S: u64 = 5 * 60;
 
 #[entry]
 fn main() -> ! {
@@ -38,12 +39,12 @@ fn main() -> ! {
     )
     .unwrap();
 
-    // Broadcast measurement via ESP-NOW
+    // prepare peripherals
     let wifi = peripherals.WIFI;
     let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-
     let mut rtc = Rtc::new(peripherals.LPWR);
 
+    // get the RTC time as a value to send onwards.
     let now: u64 = rtc
         .current_time()
         .and_utc()
@@ -51,7 +52,7 @@ fn main() -> ! {
         .try_into()
         .expect("current_time is negative");
 
-    // send the message
+    // broadcast the message
     let status = esp_now
         .send(&BROADCAST_ADDRESS, &now.to_le_bytes())
         .unwrap()
@@ -59,7 +60,7 @@ fn main() -> ! {
     println!("Send broadcast status: {:?}", status);
 
     // enter deep sleep;
-    let wake_src = TimerWakeupSource::new(core::time::Duration::from_secs(SLEEP_DURATION));
+    let wake_src = TimerWakeupSource::new(core::time::Duration::from_secs(SLEEP_DURATION_S));
     led.set_low();
     rtc.sleep_deep(&[&wake_src]);
 }
