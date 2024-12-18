@@ -2,12 +2,14 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_time::Timer;
+
 use esp_backtrace as _;
 use esp_hal::prelude::*;
 use esp_wifi::esp_now::EspNow;
 use log::info;
 extern crate alloc;
+
+// https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
 
 #[main]
 async fn main(_spawner: Spawner) {
