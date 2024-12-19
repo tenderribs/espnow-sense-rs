@@ -33,7 +33,7 @@ const WAKEUP_HR: f32 = 6.0; // when to wake up from deep sleep, is timezone awar
 // validate specified configuration
 const _: () = {
     assert!(
-        BEDTIME_HR > 12.0 && BEDTIME_HR <= 24.0,
+        BEDTIME_HR > 12.0 && BEDTIME_HR < 24.0,
         "Bedtime should be in the PM, local time."
     );
     assert!(
