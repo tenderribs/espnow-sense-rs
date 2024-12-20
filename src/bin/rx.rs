@@ -2,12 +2,15 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_time::Timer;
+
 use esp_backtrace as _;
 use esp_hal::prelude::*;
 use esp_wifi::esp_now::EspNow;
 use log::info;
+
 extern crate alloc;
+
+// https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
 
 #[main]
 async fn main(_spawner: Spawner) {
@@ -20,8 +23,9 @@ async fn main(_spawner: Spawner) {
     esp_alloc::heap_allocator!(72 * 1024);
     esp_println::logger::init_logger_from_env();
 
-    let timer0 = esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER)
-        .split::<esp_hal::timer::systimer::Target>();
+    let timer0 =
+        esp_hal::timer::systimer::SystemTimer::new(peripherals.SYSTIMER)
+            .split::<esp_hal::timer::systimer::Target>();
     esp_hal_embassy::init(timer0.alarm0);
 
     info!("Embassy initialized!");

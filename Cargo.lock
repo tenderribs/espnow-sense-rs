@@ -224,28 +224,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f878075b9794c1e4ac788c95b728f26aa6366d32eeb10c7051389f898f7d067"
 
 [[package]]
-name = "embassy-gen"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "embassy-executor",
- "embassy-net",
- "embassy-time",
- "embedded-io",
- "embedded-io-async",
- "esp-alloc",
- "esp-backtrace",
- "esp-hal",
- "esp-hal-embassy",
- "esp-println",
- "esp-wifi",
- "heapless",
- "log",
- "smoltcp",
- "static_cell",
-]
-
-[[package]]
 name = "embassy-net"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -626,6 +604,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-storage"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "661aebceb62e0caadd7e6bddd88b2d891c3b08cea4eb5afe96ef697674ccda5c"
+dependencies = [
+ "critical-section",
+ "embedded-storage",
+ "esp-build",
+]
+
+[[package]]
 name = "esp-wifi"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -675,6 +664,31 @@ checksum = "8b98fcf7ae90ee4d55f06170dfeaaebbf2a1619bb38b4e14b9009b4d636b87e7"
 dependencies = [
  "critical-section",
  "vcell",
+]
+
+[[package]]
+name = "espnow-sense-rs"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "critical-section",
+ "embassy-executor",
+ "embassy-net",
+ "embassy-time",
+ "embedded-io",
+ "embedded-io-async",
+ "embedded-storage",
+ "esp-alloc",
+ "esp-backtrace",
+ "esp-hal",
+ "esp-hal-embassy",
+ "esp-println",
+ "esp-storage",
+ "esp-wifi",
+ "heapless",
+ "log",
+ "smoltcp",
+ "static_cell",
 ]
 
 [[package]]

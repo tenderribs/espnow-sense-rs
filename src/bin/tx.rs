@@ -13,8 +13,31 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::esp_now::BROADCAST_ADDRESS;
 
+use espnow_sense_rs::{set_rtc_time, DeepSleep};
+
+// https://sensirion.com/media/documents/1DA31AFD/65D613A8/Datasheet_STS3x_DIS.pdf
+
 // Log every 5 mins
-const SLEEP_DURATION_S: u64 = 5 * 60;
+const SLEEP_DURATION_S: u64 = 5;
+
+// extended deep sleep config during overnight stop
+const UTC_DIFF: f32 = 1.0; // timezone diff to UTC. in CH should be +1 or +2, in AU should be +9.5 or +10.5
+const BEDTIME_HR: f32 = 22.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
+const WAKEUP_HR: f32 = 6.0; // when to wake up from deep sleep, is timezone aware
+
+// validate specified configuration
+const _: () = {
+    assert!(
+        BEDTIME_HR > 12.0 && BEDTIME_HR < 24.0,
+        "Bedtime should be in the PM, local time."
+    );
+    assert!(
+        WAKEUP_HR > 0.0 && WAKEUP_HR <= 12.0,
+        "Waketime has to be in the AM, local time."
+    );
+    assert!(UTC_DIFF > 0.0, "CH and AU have positive UTC offsets.");
+    assert!(UTC_DIFF < 11.0, "UTC offset is too high.");
+};
 
 #[entry]
 fn main() -> ! {
@@ -42,7 +65,10 @@ fn main() -> ! {
     // prepare peripherals
     let wifi = peripherals.WIFI;
     let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
+
     let mut rtc = Rtc::new(peripherals.LPWR);
+
+    set_rtc_time(&rtc);
 
     // get the RTC time as a value to send onwards.
     let now: u64 = rtc
@@ -59,8 +85,12 @@ fn main() -> ! {
         .wait();
     println!("Send broadcast status: {:?}", status);
 
-    // enter deep sleep;
-    let wake_src = TimerWakeupSource::new(core::time::Duration::from_secs(SLEEP_DURATION_S));
     led.set_low();
+
+    // enter deep sleep;
+    let ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
+    let duration = ds.sleep_duration(rtc.current_time().time());
+    let wake_src =
+        TimerWakeupSource::new(core::time::Duration::from_secs(duration));
     rtc.sleep_deep(&[&wake_src]);
 }
