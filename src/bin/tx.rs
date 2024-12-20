@@ -74,7 +74,6 @@ fn main() -> ! {
     let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
 
     // init temp sensor
-    // https://sensirion.com/media/documents/1DA31AFD/65D613A8/Datasheet_STS3x_DIS.pdf
     let i2c = I2c::new(peripherals.I2C0, Config::default())
         .with_sda(peripherals.GPIO0)
         .with_scl(peripherals.GPIO1);
