@@ -4,12 +4,23 @@
 use alloc::format;
 use chrono::{Datelike, Timelike};
 use core::cell::RefCell;
+use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
+use embedded_graphics::{
+    mono_font::{
+        ascii::{FONT_5X8, FONT_8X13},
+        MonoTextStyle,
+    },
+    pixelcolor::Rgb565,
+    prelude::*,
+    text::Text,
+};
 use embedded_hal_bus::spi::RefCellDevice;
 use embedded_sdmmc::{Mode, SdCard, VolumeIdx, VolumeManager};
 use esp_backtrace as _;
 use esp_hal::{
     delay::Delay,
+    gpio::{Level, Output},
     prelude::*,
     rtc_cntl::Rtc,
     spi::{
@@ -20,6 +31,11 @@ use esp_hal::{
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rtc_time;
 use log::info;
+use mipidsi::{
+    models::ST7789,
+    options::{ColorInversion, Orientation, Rotation},
+    Builder,
+};
 extern crate alloc;
 
 #[main]
@@ -33,6 +49,12 @@ async fn main(_spawner: Spawner) {
     esp_alloc::heap_allocator!(72 * 1024);
     esp_println::logger::init_logger_from_env();
 
+    let sd_cs = Output::new(peripherals.GPIO4, Level::High);
+    let lcd_cs = Output::new(peripherals.GPIO14, Level::High);
+    let lcd_dc = Output::new(peripherals.GPIO15, Level::High);
+    let lcd_rst = Output::new(peripherals.GPIO21, Level::High);
+    let mut lcd_bl = Output::new(peripherals.GPIO22, Level::Low);
+
     // init RTC
     let rtc = Rtc::new(peripherals.LPWR);
     set_rtc_time(&rtc);
@@ -44,10 +66,10 @@ async fn main(_spawner: Spawner) {
     esp_hal_embassy::init(timer0.alarm0);
     let timer1 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
 
-    let delay = Delay::new();
+    let mut delay = Delay::new();
 
     // init SPI based on pinout: https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
-    let spi = Spi::new_with_config(
+    let spi_driver = Spi::new_with_config(
         peripherals.SPI2,
         Config {
             frequency: 400.kHz(),
@@ -56,27 +78,49 @@ async fn main(_spawner: Spawner) {
         },
     )
     .with_sck(peripherals.GPIO7)
-    .with_mosi(peripherals.GPIO6)
     .with_miso(peripherals.GPIO5)
-    .with_cs(peripherals.GPIO4)
+    .with_mosi(peripherals.GPIO6)
     .into_async();
-
-    // prepare SD card access as a device over a shared SPI bus
     // https://github.com/syrtcevvi/rust-esp32-embedded-sdmmc/blob/master/examples/esp-hal/src/main.rs
-    let spi = RefCell::new(spi);
-    let sd_spi_device = RefCellDevice::new(&spi, DummyCsPin, delay).unwrap();
-    let sd_card = SdCard::new(sd_spi_device, delay);
-    info!("Instantiated SD card struct");
+    let spi_bus = RefCell::new(spi_driver);
 
-    // waits until SD card is inserted
+    let lcd_spi_dev = RefCellDevice::new(&spi_bus, lcd_cs, delay).unwrap();
+    let di = SPIInterface::new(lcd_spi_dev, lcd_dc);
+    let mut display = Builder::new(ST7789, di)
+        .reset_pin(lcd_rst)
+        .invert_colors(ColorInversion::Normal)
+        .orientation(Orientation::default().rotate(Rotation::Deg270))
+        .init(&mut delay)
+        .expect("Cannot init display");
+
+    display.clear(Rgb565::WHITE).unwrap();
+
+    let style = MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK);
+    Text::new(
+        "Hello World! - default style 5x8",
+        Point::new(10, 50),
+        style,
+    )
+    .draw(&mut display)
+    .unwrap();
+
+    lcd_bl.set_high();
+
+    // prepare SD card access as a device over a shared SPI bus via refcell
+    let sd_spi_device = RefCellDevice::new(&spi_bus, sd_cs, delay).unwrap();
+
+    // open SD card when inserted
+    let sd_card = SdCard::new(sd_spi_device, delay);
     let mut volume_mgr = VolumeManager::new(sd_card, SdRtc::new(&rtc));
+
+    // open CSV file for writing
     let mut volume0 = volume_mgr
         .open_volume(VolumeIdx(0))
         .expect("Can't open first partition on SD card");
     let mut root_dir =
         volume0.open_root_dir().expect("Cannot open root directory");
     let mut file = root_dir
-        .open_file_in_dir("log.csv", Mode::ReadWriteCreateOrAppend)
+        .open_file_in_dir("LOG.CSV", Mode::ReadWriteCreateOrAppend)
         .expect("Cannot open CSV file for appending");
 
     // init esp-now
@@ -94,11 +138,16 @@ async fn main(_spawner: Spawner) {
 
         if let Ok(bytes) = recv.data().try_into() {
             let val = f64::from_le_bytes(bytes);
+            let a = recv.info.src_address;
+            let src_addr = format!(
+                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                a[0], a[1], a[2], a[3], a[4], a[5]
+            );
             info!("recv T meas {}", val);
 
             // construct line
             let timestamp = rtc.current_time().and_utc().to_rfc3339();
-            let line = format!("{}, {}\r\n", timestamp, val);
+            let line = format!("{}, {}, {}\r\n", timestamp, src_addr, val);
 
             // append line
             if let Ok(()) = file.seek_from_end(0) {
@@ -107,24 +156,6 @@ async fn main(_spawner: Spawner) {
                 }
             }
         }
-    }
-}
-
-// explanation: https://docs.rs/embedded-sdmmc/latest/embedded_sdmmc/struct.SdCard.html
-pub struct DummyCsPin;
-impl embedded_hal::digital::ErrorType for DummyCsPin {
-    type Error = core::convert::Infallible;
-}
-
-impl embedded_hal::digital::OutputPin for DummyCsPin {
-    #[inline(always)]
-    fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(())
     }
 }
 
