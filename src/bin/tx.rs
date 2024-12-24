@@ -22,8 +22,8 @@ const SLEEP_DURATION_S: u64 = 5;
 
 // extended deep sleep config during overnight stop
 const UTC_DIFF: f32 = 1.0; // timezone diff to UTC. in CH should be +1 or +2, in AU should be +9.5 or +10.5
-const BEDTIME_HR: f32 = 22.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
-const WAKEUP_HR: f32 = 6.0; // when to wake up from deep sleep, is timezone aware
+const BEDTIME_HR: f32 = 20.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
+const WAKEUP_HR: f32 = 6.5; // when to wake up from deep sleep, is timezone aware
 
 // validate specified configuration
 const _: () = {
@@ -54,24 +54,11 @@ fn main() -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
     let delay = Delay::new();
-    let mut led = Output::new(peripherals.GPIO15, Level::High);
     let mut tsensor_pwr = Output::new(peripherals.GPIO19, Level::High);
-
-    // prepare peripherals
-    let init = esp_wifi::init(
-        timg0.timer0,
-        Rng::new(peripherals.RNG),
-        peripherals.RADIO_CLK,
-    )
-    .unwrap();
 
     // init RTC
     let rtc = Rtc::new(peripherals.LPWR);
     set_tx_rtc_time(&rtc);
-
-    // init esp-now
-    let wifi = peripherals.WIFI;
-    let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
 
     // init temp sensor
     let i2c = I2c::new(peripherals.I2C0, Config::default())
@@ -81,6 +68,18 @@ fn main() -> ! {
 
     // read temperature value in single shot mode
     if let Ok(temperature) = tsensor.single_shot(Repeatability::High) {
+        // prepare WIFI peripherals
+        let init = esp_wifi::init(
+            timg0.timer0,
+            Rng::new(peripherals.RNG),
+            peripherals.RADIO_CLK,
+        )
+        .unwrap();
+
+        // init esp-now
+        let wifi = peripherals.WIFI;
+        let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
+
         // broadcast the message
         let _ = esp_now
             .send(&BROADCAST_ADDRESS, &temperature.as_celsius().to_le_bytes())
@@ -89,7 +88,6 @@ fn main() -> ! {
     }
 
     // power down peripherals
-    led.set_low();
     tsensor_pwr.set_low();
 
     enter_deep_sleep(rtc);
