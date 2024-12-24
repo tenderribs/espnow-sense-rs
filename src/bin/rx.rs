@@ -149,7 +149,10 @@ async fn main(_spawner: Spawner) {
 
             // construct line
             let timestamp = rtc.current_time().and_utc().to_rfc3339();
-            let line = format!("{}, {}, {}\r\n", timestamp, src_addr, val);
+            let line = format!(
+                "{}, {}, {}, {}\r\n",
+                timestamp, src_addr, val, recv.info.rx_control.rssi
+            );
             info!("{}", line);
 
             // append line
