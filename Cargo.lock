@@ -208,6 +208,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ds323x"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5157c16c530fa971b40f2b591edd86b9ce300ec1e5c267a4d6df6ee7df890a6"
+dependencies = [
+ "embedded-hal 0.2.7",
+ "rtcc",
+]
+
+[[package]]
 name = "embassy-embedded-hal"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -749,6 +759,7 @@ dependencies = [
  "chrono",
  "critical-section",
  "display-interface-spi",
+ "ds323x",
  "embassy-executor",
  "embassy-net",
  "embassy-time",
@@ -1230,6 +1241,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "rtcc"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95973c3a0274adc4f3c5b70d2b5b85618d6de9559a6737d3293ecae9a2fc0839"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

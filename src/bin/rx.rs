@@ -7,10 +7,7 @@ use core::cell::RefCell;
 use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
 use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_5X8, FONT_8X13},
-        MonoTextStyle,
-    },
+    mono_font::{ascii::FONT_8X13, MonoTextStyle},
     pixelcolor::Rgb565,
     prelude::*,
     text::Text,
@@ -21,21 +18,20 @@ use esp_backtrace as _;
 use esp_hal::{
     delay::Delay,
     gpio::{Level, Output},
+    i2c::{self, master::I2c},
     prelude::*,
     rtc_cntl::Rtc,
-    spi::{
-        master::{Config, Spi},
-        SpiMode,
-    },
+    spi::{self, master::Spi, SpiMode},
 };
 use esp_wifi::esp_now::EspNow;
-use espnow_sense_rs::set_rtc_time;
+use espnow_sense_rs::set_rx_rtc_time;
 use log::info;
 use mipidsi::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
     Builder,
 };
+
 extern crate alloc;
 
 #[main]
@@ -57,7 +53,14 @@ async fn main(_spawner: Spawner) {
 
     // init RTC
     let rtc = Rtc::new(peripherals.LPWR);
-    set_rtc_time(&rtc);
+
+    // I2C bus to access the external RTC
+    let i2c: I2c<'_, esp_hal::Blocking> =
+        I2c::new(peripherals.I2C0, i2c::master::Config::default())
+            .with_scl(peripherals.GPIO0)
+            .with_sda(peripherals.GPIO1);
+
+    set_rx_rtc_time(&rtc, i2c);
 
     // init timers
     let timer0 =
@@ -71,10 +74,10 @@ async fn main(_spawner: Spawner) {
     // init SPI based on pinout: https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
     let spi_driver = Spi::new_with_config(
         peripherals.SPI2,
-        Config {
+        spi::master::Config {
             frequency: 400.kHz(),
             mode: SpiMode::Mode0,
-            ..Config::default()
+            ..spi::master::Config::default()
         },
     )
     .with_sck(peripherals.GPIO7)
@@ -139,15 +142,12 @@ async fn main(_spawner: Spawner) {
         if let Ok(bytes) = recv.data().try_into() {
             let val = f64::from_le_bytes(bytes);
             let a = recv.info.src_address;
-            let src_addr = format!(
-                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                a[0], a[1], a[2], a[3], a[4], a[5]
-            );
-            info!("recv T meas {}", val);
+            let src_addr = format!("{:02x?}", &a[..6]);
 
             // construct line
             let timestamp = rtc.current_time().and_utc().to_rfc3339();
             let line = format!("{}, {}, {}\r\n", timestamp, src_addr, val);
+            info!("{}", line);
 
             // append line
             if let Ok(()) = file.seek_from_end(0) {

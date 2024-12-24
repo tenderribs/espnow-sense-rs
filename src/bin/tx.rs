@@ -15,7 +15,7 @@ use esp_hal::{
 use esp_wifi::esp_now::BROADCAST_ADDRESS;
 use sensirion_rht::{Addr, Device, Repeatability};
 
-use espnow_sense_rs::{set_rtc_time, DeepSleep};
+use espnow_sense_rs::{set_tx_rtc_time, DeepSleep};
 
 // default interval between measurements
 const SLEEP_DURATION_S: u64 = 5;
@@ -67,7 +67,7 @@ fn main() -> ! {
 
     // init RTC
     let rtc = Rtc::new(peripherals.LPWR);
-    set_rtc_time(&rtc);
+    set_tx_rtc_time(&rtc);
 
     // init esp-now
     let wifi = peripherals.WIFI;
