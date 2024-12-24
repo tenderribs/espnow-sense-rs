@@ -74,8 +74,6 @@ where
     println!("Setting RX RTC time");
 
     let mut ext_rtc = Ds323x::new_ds3231(i2c);
-    println!("is ext_rtc running: {}", ext_rtc.running().unwrap());
-    ext_rtc.enable().unwrap();
 
     let now_dt: NaiveDateTime = match is_first_boot(&build_dt) {
         true => {
