@@ -60,6 +60,18 @@ fn main() -> ! {
     let rtc = Rtc::new(peripherals.LPWR);
     set_tx_rtc_time(&rtc);
 
+    // prepare WIFI peripherals
+    let init = esp_wifi::init(
+        timg0.timer0,
+        Rng::new(peripherals.RNG),
+        peripherals.RADIO_CLK,
+    )
+    .unwrap();
+
+    // init esp-now
+    let wifi = peripherals.WIFI;
+    let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
+
     // init temp sensor
     let i2c = I2c::new(peripherals.I2C0, Config::default())
         .with_sda(peripherals.GPIO0)
@@ -68,18 +80,6 @@ fn main() -> ! {
 
     // read temperature value in single shot mode
     if let Ok(temperature) = tsensor.single_shot(Repeatability::High) {
-        // prepare WIFI peripherals
-        let init = esp_wifi::init(
-            timg0.timer0,
-            Rng::new(peripherals.RNG),
-            peripherals.RADIO_CLK,
-        )
-        .unwrap();
-
-        // init esp-now
-        let wifi = peripherals.WIFI;
-        let mut esp_now = esp_wifi::esp_now::EspNow::new(&init, wifi).unwrap();
-
         // broadcast the message
         let _ = esp_now
             .send(&BROADCAST_ADDRESS, &temperature.as_celsius().to_le_bytes())

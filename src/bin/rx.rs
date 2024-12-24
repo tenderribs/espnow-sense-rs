@@ -34,6 +34,9 @@ use mipidsi::{
 
 extern crate alloc;
 
+// 54:32:04:33:6b:04
+// 54:32:04:33:69:90
+
 #[main]
 async fn main(_spawner: Spawner) {
     let peripherals = esp_hal::init({
