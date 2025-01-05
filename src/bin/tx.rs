@@ -80,9 +80,11 @@ fn main() -> ! {
 
     // read temperature value in single shot mode
     if let Ok(temperature) = tsensor.single_shot(Repeatability::High) {
+        let temperature = temperature.as_celsius() as f32;
+
         // broadcast the message
         let _ = esp_now
-            .send(&BROADCAST_ADDRESS, &temperature.as_celsius().to_le_bytes())
+            .send(&BROADCAST_ADDRESS, &temperature.to_le_bytes())
             .unwrap()
             .wait();
     }
