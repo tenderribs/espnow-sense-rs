@@ -6,22 +6,14 @@ use chrono::{Datelike, Timelike};
 use core::cell::RefCell;
 use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
-use embedded_graphics::{
-    mono_font::{ascii::FONT_8X13, MonoTextStyle},
-    pixelcolor::Rgb565,
-    prelude::*,
-    text::Text,
-};
+use embassy_time::{Duration, Timer};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+
 use embedded_hal_bus::spi::RefCellDevice;
 use embedded_sdmmc::{Mode, SdCard, VolumeIdx, VolumeManager};
 use esp_backtrace as _;
 use esp_hal::{
-    delay::Delay,
-    gpio::{Level, Output},
-    i2c::{self, master::I2c},
-    prelude::*,
-    rtc_cntl::Rtc,
-    spi::{self, master::Spi, SpiMode},
+    delay::Delay, gpio::{Level, Output}, i2c::{self, master::I2c}, peripherals::TIMG0, prelude::*, rng::Rng, rtc_cntl::Rtc, spi::{self, master::Spi, SpiMode}
 };
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rx_rtc_time;
@@ -29,16 +21,31 @@ use log::info;
 use mipidsi::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
-    Builder,
+    Builder, Display,
 };
 
 extern crate alloc;
 
-// 54:32:04:33:6b:04
-// 54:32:04:33:69:90
+const TX_DEVS: [TxDevice; 2] = [
+    TxDevice {
+        name: "Dev 1",
+        addr: "[54, 32, 04, 33, 6b, 04]",
+        plot_color: Rgb565::CSS_LIGHT_SKY_BLUE,
+    },
+    TxDevice {
+        name: "Dev 2",
+        addr: "[54, 32, 04, 33, 69, 90]",
+        plot_color: Rgb565::CSS_LIGHT_GREEN,
+    },
+];
+
+async fn load_clock(
+    spawner: Spawner,
+    timg0: TIMG0,
+    rng: Rng) -> Result<Clock
 
 #[main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init({
         let mut config = esp_hal::Config::default();
         config.cpu_clock = CpuClock::max();
@@ -49,6 +56,7 @@ async fn main(_spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
     let sd_cs = Output::new(peripherals.GPIO4, Level::High);
+
     let lcd_cs = Output::new(peripherals.GPIO14, Level::High);
     let lcd_dc = Output::new(peripherals.GPIO15, Level::High);
     let lcd_rst = Output::new(peripherals.GPIO21, Level::High);
@@ -90,6 +98,7 @@ async fn main(_spawner: Spawner) {
     // https://github.com/syrtcevvi/rust-esp32-embedded-sdmmc/blob/master/examples/esp-hal/src/main.rs
     let spi_bus = RefCell::new(spi_driver);
 
+    // prepare SD card access as a device over a shared SPI bus via refcell
     let lcd_spi_dev = RefCellDevice::new(&spi_bus, lcd_cs, delay).unwrap();
     let di = SPIInterface::new(lcd_spi_dev, lcd_dc);
     let mut display = Builder::new(ST7789, di)
@@ -99,22 +108,7 @@ async fn main(_spawner: Spawner) {
         .init(&mut delay)
         .expect("Cannot init display");
 
-    display.clear(Rgb565::WHITE).unwrap();
-
-    let style = MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK);
-    Text::new(
-        "Hello World! - default style 5x8",
-        Point::new(10, 50),
-        style,
-    )
-    .draw(&mut display)
-    .unwrap();
-
-    lcd_bl.set_high();
-
-    // prepare SD card access as a device over a shared SPI bus via refcell
     let sd_spi_device = RefCellDevice::new(&spi_bus, sd_cs, delay).unwrap();
-
     // open SD card when inserted
     let sd_card = SdCard::new(sd_spi_device, delay);
     let mut volume_mgr = VolumeManager::new(sd_card, SdRtc::new(&rtc));
@@ -139,29 +133,62 @@ async fn main(_spawner: Spawner) {
     let wifi = peripherals.WIFI;
     let mut esp_now: EspNow = EspNow::new(&init, wifi).unwrap();
 
+    // start LCD background task
+    spawner.spawn(lcd_background_task()).ok();
+
+    // receive ESP-Now data and write to SD-Card
     loop {
         let recv = esp_now.receive_async().await;
+        let src_addr = format!("{:02x?}", &recv.info.src_address[..6]);
 
         if let Ok(bytes) = recv.data().try_into() {
             let val = f64::from_le_bytes(bytes);
-            let a = recv.info.src_address;
-            let src_addr = format!("{:02x?}", &a[..6]);
 
             // construct line
-            let timestamp = rtc.current_time().and_utc().to_rfc3339();
+            let timestamp: alloc::string::String =
+                rtc.current_time().and_utc().to_rfc3339();
             let line = format!(
                 "{}, {}, {}, {}\r\n",
                 timestamp, src_addr, val, recv.info.rx_control.rssi
             );
             info!("{}", line);
 
-            // append line
+            // append line to file
             if let Ok(()) = file.seek_from_end(0) {
                 if let Ok(()) = file.write(line.as_bytes()) {
                     file.flush().unwrap();
                 }
             }
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn lcd_background_task() {
+    // Turn on the backlight
+    lcd_bl.set_high();
+
+    // Clear the display initially
+    display.clear(Rgb565::WHITE).unwrap();
+
+    loop {
+        // Wait 10 seconds before updating
+        Timer::after(Duration::from_secs(10)).await;
+
+        // Perform any display updates here
+        display.clear(Rgb565::CYAN).unwrap(); // Example update
+    }
+}
+
+struct TxDevice<'a> {
+    addr: &'a str,
+    plot_color: Rgb565,
+    name: &'a str,
+}
+
+impl TxDevice<'_> {
+    fn addr_str(&self) -> alloc::string::String {
+        format!("{:02x?}", &self.addr[..6])
     }
 }
 
