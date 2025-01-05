@@ -2,16 +2,15 @@
 #![no_main]
 
 use alloc::format;
-use chrono::{Datelike, Timelike};
+use chrono::{Datelike, NaiveDateTime, Timelike};
 use core::cell::RefCell;
 use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
-use embedded_graphics::{
-    mono_font::{ascii::FONT_8X13, MonoTextStyle},
-    pixelcolor::Rgb565,
-    prelude::*,
-    text::Text,
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    pubsub::{self, PubSubChannel},
 };
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use embedded_hal_bus::spi::RefCellDevice;
 use embedded_sdmmc::{Mode, SdCard, VolumeIdx, VolumeManager};
 use esp_backtrace as _;
@@ -25,20 +24,24 @@ use esp_hal::{
 };
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rx_rtc_time;
-use log::info;
+use heapless::Vec;
 use mipidsi::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
     Builder,
 };
 
+static CHANNEL: MeasChannel = MeasChannel::new();
 extern crate alloc;
 
 // 54:32:04:33:6b:04
 // 54:32:04:33:69:90
+type MeasChannel = PubSubChannel<CriticalSectionRawMutex, Measurement, 4, 2, 1>;
+// type MeasSubscriber =
+//     Subscriber<'static, CriticalSectionRawMutex, Measurement, 4, 2, 1>;
 
-#[main]
-async fn main(_spawner: Spawner) {
+#[esp_hal_embassy::main]
+async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init({
         let mut config = esp_hal::Config::default();
         config.cpu_clock = CpuClock::max();
@@ -58,10 +61,9 @@ async fn main(_spawner: Spawner) {
     let rtc = Rtc::new(peripherals.LPWR);
 
     // I2C bus to access the external RTC
-    let i2c: I2c<'_, esp_hal::Blocking> =
-        I2c::new(peripherals.I2C0, i2c::master::Config::default())
-            .with_scl(peripherals.GPIO0)
-            .with_sda(peripherals.GPIO1);
+    let i2c = I2c::new(peripherals.I2C0, i2c::master::Config::default())
+        .with_scl(peripherals.GPIO0)
+        .with_sda(peripherals.GPIO1);
 
     set_rx_rtc_time(&rtc, i2c);
 
@@ -75,7 +77,8 @@ async fn main(_spawner: Spawner) {
     let mut delay = Delay::new();
 
     // init SPI based on pinout: https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
-    let spi_driver = Spi::new_with_config(
+    // https://github.com/syrtcevvi/rust-esp32-embedded-sdmmc/blob/master/examples/esp-hal/src/main.rs
+    let spi_bus = Spi::new_with_config(
         peripherals.SPI2,
         spi::master::Config {
             frequency: 400.kHz(),
@@ -87,8 +90,7 @@ async fn main(_spawner: Spawner) {
     .with_miso(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO6)
     .into_async();
-    // https://github.com/syrtcevvi/rust-esp32-embedded-sdmmc/blob/master/examples/esp-hal/src/main.rs
-    let spi_bus = RefCell::new(spi_driver);
+    let spi_bus = RefCell::new(spi_bus);
 
     let lcd_spi_dev = RefCellDevice::new(&spi_bus, lcd_cs, delay).unwrap();
     let di = SPIInterface::new(lcd_spi_dev, lcd_dc);
@@ -98,25 +100,10 @@ async fn main(_spawner: Spawner) {
         .orientation(Orientation::default().rotate(Rotation::Deg270))
         .init(&mut delay)
         .expect("Cannot init display");
-
     display.clear(Rgb565::WHITE).unwrap();
 
-    let style = MonoTextStyle::new(&FONT_8X13, Rgb565::BLACK);
-    Text::new(
-        "Hello World! - default style 5x8",
-        Point::new(10, 50),
-        style,
-    )
-    .draw(&mut display)
-    .unwrap();
-
-    lcd_bl.set_high();
-
-    // prepare SD card access as a device over a shared SPI bus via refcell
-    let sd_spi_device = RefCellDevice::new(&spi_bus, sd_cs, delay).unwrap();
-
-    // open SD card when inserted
-    let sd_card = SdCard::new(sd_spi_device, delay);
+    let sd_spi_device = RefCellDevice::new(&spi_bus, sd_cs, delay).unwrap(); // prepare SD card access as a device over a shared SPI bus via refcell
+    let sd_card = SdCard::new(sd_spi_device, delay); // open SD card when inserted
     let mut volume_mgr = VolumeManager::new(sd_card, SdRtc::new(&rtc));
 
     // open CSV file for writing
@@ -139,28 +126,60 @@ async fn main(_spawner: Spawner) {
     let wifi = peripherals.WIFI;
     let mut esp_now: EspNow = EspNow::new(&init, wifi).unwrap();
 
+    let pub0 = CHANNEL.publisher().unwrap();
+
+    spawner.spawn(display_task()).ok();
+    spawner.spawn(sd_card_task()).ok();
+
     loop {
         let recv = esp_now.receive_async().await;
 
         if let Ok(bytes) = recv.data().try_into() {
-            let val = f64::from_le_bytes(bytes);
-            let a = recv.info.src_address;
-            let src_addr = format!("{:02x?}", &a[..6]);
+            let value = f32::from_le_bytes(bytes);
 
-            // construct line
-            let timestamp = rtc.current_time().and_utc().to_rfc3339();
-            let line = format!(
-                "{}, {}, {}, {}\r\n",
-                timestamp, src_addr, val, recv.info.rx_control.rssi
+            let meas = Measurement {
+                timestamp: rtc.current_time(),
+                src_addr: recv.info.src_address,
+                value,
+            };
+
+            pub0.publish_immediate(meas);
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn display_task() {
+    let _measurements: Vec<Measurement, 50>;
+
+    let mut sub = CHANNEL.subscriber().unwrap();
+    loop {
+        if let pubsub::WaitResult::Message(_meas) = sub.next_message().await {
+            // process message
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn sd_card_task() {
+    let mut sub = CHANNEL.subscriber().unwrap();
+    loop {
+        if let pubsub::WaitResult::Message(meas) = sub.next_message().await {
+            let src_addr = format!("{:02x?}", &meas.src_addr[..6]);
+
+            let _line = format!(
+                "{}, {}, {}\r\n",
+                meas.timestamp.and_utc().to_rfc3339(),
+                src_addr,
+                meas.value
             );
-            info!("{}", line);
 
-            // append line
-            if let Ok(()) = file.seek_from_end(0) {
-                if let Ok(()) = file.write(line.as_bytes()) {
-                    file.flush().unwrap();
-                }
-            }
+            // // append line
+            // if let Ok(()) = file.seek_from_end(0) {
+            //     if let Ok(()) = file.write(line.as_bytes()) {
+            //         file.flush().unwrap();
+            //     }
+            // }
         }
     }
 }
@@ -189,4 +208,11 @@ impl<'a> embedded_sdmmc::TimeSource for SdRtc<'a> {
             seconds: now.second() as u8,
         }
     }
+}
+
+#[derive(Clone)]
+struct Measurement {
+    timestamp: NaiveDateTime,
+    value: f32,
+    src_addr: [u8; 6],
 }
