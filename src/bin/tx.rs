@@ -22,7 +22,7 @@ const SLEEP_DURATION_S: u64 = 5;
 
 // extended deep sleep config during overnight stop
 const UTC_DIFF: f32 = 1.0; // timezone diff to UTC. in CH should be +1 or +2, in AU should be +9.5 or +10.5
-const BEDTIME_HR: f32 = 20.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
+const BEDTIME_HR: f32 = 23.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
 const WAKEUP_HR: f32 = 6.5; // when to wake up from deep sleep, is timezone aware
 
 // validate specified configuration
