@@ -96,7 +96,6 @@ async fn main(spawner: Spawner) {
     .with_mosi(peripherals.GPIO6)
     .into_async();
     let spi_bus = RefCell::new(spi_bus);
-
     let _lcd_spi_dev = RefCellDevice::new(&spi_bus, lcd_cs, delay).unwrap();
     let _sd_spi_device = RefCellDevice::new(&spi_bus, sd_cs, delay).unwrap(); // prepare SD card access as a device over a shared SPI bus via refcell
 
@@ -117,27 +116,25 @@ async fn main(spawner: Spawner) {
 
     loop {
         let recv = esp_now.receive_async().await;
-        println!("received message");
+
         // only process comms from whitelisted TX devices
         if !TX_DEVS.iter().any(|&txdev| txdev == recv.info.src_address) {
             println!("rejecting message");
             continue;
         }
 
-        println!("proceeding with message");
+        if let Ok(bytes) = recv.data().try_into() {
+            let value = f32::from_le_bytes(bytes);
+            println!("parsed bytes as f32");
 
-        // if let Ok(bytes) = recv.data().try_into() {
-        //     let value = f32::from_le_bytes(bytes);
-        //     println!("parsed bytes as f32");
+            let meas = Measurement {
+                timestamp: rtc.current_time(),
+                src_addr: recv.info.src_address,
+                value,
+            };
 
-        //     let meas = Measurement {
-        //         timestamp: rtc.current_time(),
-        //         src_addr: recv.info.src_address,
-        //         value,
-        //     };
-
-        //     pub0.publish_immediate(meas);
-        // }
+            pub0.publish_immediate(meas);
+        }
     }
 }
 
