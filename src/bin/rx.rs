@@ -1,17 +1,18 @@
 #![no_std]
 #![no_main]
 
-use alloc::format;
+use alloc::{format, sync::Arc};
 use chrono::{Datelike, NaiveDateTime, Timelike};
 use core::cell::RefCell;
-use display_interface_spi::SPIInterface;
+use critical_section::Mutex;
+// use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     pubsub::{self, PubSubChannel},
 };
-use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
-use embedded_hal_bus::spi::RefCellDevice;
+// use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+use embedded_hal_bus::spi::CriticalSectionDevice;
 use embedded_sdmmc::{Mode, SdCard, VolumeIdx, VolumeManager};
 use esp_backtrace as _;
 use esp_hal::{
@@ -26,15 +27,21 @@ use esp_println::println;
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rx_rtc_time;
 use heapless::{FnvIndexMap, Vec};
-use mipidsi::{
-    models::ST7789,
-    options::{ColorInversion, Orientation, Rotation},
-    Builder,
-};
+// use mipidsi::{
+//     models::ST7789,
+//     options::{ColorInversion, Orientation, Rotation},
+//     Builder,
+// };
+use static_cell::StaticCell;
+
+type SpiDevice<'a> =
+    CriticalSectionDevice<'a, Spi<'a, esp_hal::Async>, Output<'a>, Delay>;
 
 extern crate alloc;
 
 static CHANNEL: MeasChannel = MeasChannel::new();
+static SPI_BUS: StaticCell<Mutex<RefCell<Spi<'static, esp_hal::Async>>>> =
+    StaticCell::new();
 
 const TX_DEVS: [[u8; 6]; 3] = [
     [0x54, 0x32, 0x04, 0x33, 0x69, 0x90], // 54:32:04:33:69:90
@@ -43,8 +50,6 @@ const TX_DEVS: [[u8; 6]; 3] = [
 ];
 
 type MeasChannel = PubSubChannel<CriticalSectionRawMutex, Measurement, 4, 2, 1>;
-// type MeasSubscriber =
-//     Subscriber<'static, CriticalSectionRawMutex, Measurement, 4, 2, 1>;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -59,12 +64,12 @@ async fn main(spawner: Spawner) {
 
     let sd_cs = Output::new(peripherals.GPIO4, Level::High);
     let lcd_cs = Output::new(peripherals.GPIO14, Level::High);
-    let lcd_dc = Output::new(peripherals.GPIO15, Level::High);
-    let lcd_rst = Output::new(peripherals.GPIO21, Level::High);
-    let mut lcd_bl = Output::new(peripherals.GPIO22, Level::Low);
+    // let lcd_dc = Output::new(peripherals.GPIO15, Level::High);
+    // let lcd_rst = Output::new(peripherals.GPIO21, Level::High);
+    // let mut lcd_bl = Output::new(peripherals.GPIO22, Level::Low);
 
     // init RTC
-    let rtc = Rtc::new(peripherals.LPWR);
+    let rtc: Arc<Rtc<'static>> = Arc::new(Rtc::new(peripherals.LPWR));
 
     // access external RTC via I2c
     let i2c = I2c::new(peripherals.I2C0, i2c::master::Config::default())
@@ -79,10 +84,8 @@ async fn main(spawner: Spawner) {
     esp_hal_embassy::init(timer0.alarm0);
     let timer1 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
 
-    let mut delay = Delay::new();
+    let delay = Delay::new();
 
-    // init SPI based on pinout: https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
-    // https://github.com/syrtcevvi/rust-esp32-embedded-sdmmc/blob/master/examples/esp-hal/src/main.rs
     let spi_bus = Spi::new_with_config(
         peripherals.SPI2,
         spi::master::Config {
@@ -91,13 +94,27 @@ async fn main(spawner: Spawner) {
             ..spi::master::Config::default()
         },
     )
+    // pinout: https://files.waveshare.com/wiki/ESP32-C6-LCD-1.47/ESP32-C6-LCD-1.47_schemetics.pdf
     .with_sck(peripherals.GPIO7)
     .with_miso(peripherals.GPIO5)
     .with_mosi(peripherals.GPIO6)
     .into_async();
-    let spi_bus = RefCell::new(spi_bus);
-    let _lcd_spi_dev = RefCellDevice::new(&spi_bus, lcd_cs, delay).unwrap();
-    let _sd_spi_device = RefCellDevice::new(&spi_bus, sd_cs, delay).unwrap(); // prepare SD card access as a device over a shared SPI bus via refcell
+
+    let spi_bus = SPI_BUS.init(Mutex::new(RefCell::new(spi_bus)));
+
+    let sd_spi_dev = CriticalSectionDevice::new(
+        unsafe { &*core::ptr::addr_of!(spi_bus) }, // unsafe justifyable because StaticCell guarantees lifetime
+        sd_cs,
+        delay,
+    )
+    .unwrap();
+
+    let lcd_spi_dev = CriticalSectionDevice::new(
+        unsafe { &*core::ptr::addr_of!(spi_bus) }, // unsafe justifyable because StaticCell guarantees lifetime
+        lcd_cs,
+        delay,
+    )
+    .unwrap();
 
     // init esp-now
     let init = esp_wifi::init(
@@ -111,8 +128,10 @@ async fn main(spawner: Spawner) {
 
     let pub0 = CHANNEL.publisher().unwrap();
 
-    spawner.spawn(display_task()).ok();
-    spawner.spawn(sd_card_task()).ok();
+    spawner.spawn(display_task(lcd_spi_dev)).ok();
+    spawner
+        .spawn(sd_card_task(sd_spi_dev, delay, Arc::clone(&rtc)))
+        .ok();
 
     loop {
         let recv = esp_now.receive_async().await;
@@ -139,9 +158,9 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn display_task() {
+async fn display_task(spi_dev: SpiDevice<'static>) {
     println!("starting display task");
-    // let di = SPIInterface::new(lcd_spi_dev, lcd_dc);
+    // let di = SPIInterface::new(spi_dev, lcd_dc);
     // let mut display = Builder::new(ST7789, di)
     //     .reset_pin(lcd_rst)
     //     .invert_colors(ColorInversion::Normal)
@@ -169,28 +188,36 @@ async fn display_task() {
 }
 
 #[embassy_executor::task]
-async fn sd_card_task() {
+async fn sd_card_task(
+    spi_dev: SpiDevice<'static>,
+    delay: Delay,
+    rtc: Arc<Rtc<'static>>,
+) {
     println!("starting SD card task");
     let mut sub = CHANNEL.subscriber().unwrap();
 
-    // let sd_card = SdCard::new(sd_spi_device, delay); // open SD card when inserted
-    // let mut volume_mgr = VolumeManager::new(sd_card, SdRtc::new(&rtc));
+    let sd_card = SdCard::new(spi_dev, delay); // open SD card when inserted
+    let mut volume_mgr = VolumeManager::new(sd_card, SdRtc::new(&rtc));
 
-    // // open CSV file for writing
-    // let mut volume0 = volume_mgr
-    //     .open_volume(VolumeIdx(0))
-    //     .expect("Can't open first partition on SD card");
-    // let mut root_dir =
-    //     volume0.open_root_dir().expect("Cannot open root directory");
-    // let mut file = root_dir
-    //     .open_file_in_dir("LOG.CSV", Mode::ReadWriteCreateOrAppend)
-    //     .expect("Cannot open CSV file for appending");
+    // open CSV file for writing
+    let mut volume0 = volume_mgr
+        .open_volume(VolumeIdx(0))
+        .expect("Can't open first partition on SD card");
+    let mut root_dir =
+        volume0.open_root_dir().expect("Cannot open root directory");
+    let mut file = root_dir
+        .open_file_in_dir("LOG.CSV", Mode::ReadWriteCreateOrAppend)
+        .expect("Cannot open CSV file for appending");
 
     loop {
         if let pubsub::WaitResult::Message(meas) = sub.next_message().await {
-            let src_addr = format!("{:02x?}", &meas.src_addr[..6]);
+            let a = meas.src_addr;
+            let src_addr = format!(
+                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                a[0], a[1], a[2], a[3], a[4], a[5]
+            );
 
-            let _line = format!(
+            let line = format!(
                 "{}, {}, {}\r\n",
                 meas.timestamp.and_utc().to_rfc3339(),
                 src_addr,
@@ -199,12 +226,12 @@ async fn sd_card_task() {
 
             println!("received value in sd card task");
 
-            // // append line
-            // if let Ok(()) = file.seek_from_end(0) {
-            //     if let Ok(()) = file.write(line.as_bytes()) {
-            //         file.flush().unwrap();
-            //     }
-            // }
+            // append line
+            if let Ok(()) = file.seek_from_end(0) {
+                if let Ok(()) = file.write(line.as_bytes()) {
+                    file.flush().unwrap();
+                }
+            }
         }
     }
 }
