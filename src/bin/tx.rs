@@ -97,8 +97,9 @@ fn main() -> ! {
 }
 
 fn enter_deep_sleep(mut rtc: Rtc) {
-    let ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
-    let duration = ds.sleep_duration(rtc.current_time().time());
+    let _ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
+    // let duration = ds.sleep_duration(rtc.current_time().time());
+    let duration = 5;
 
     let wake_src =
         TimerWakeupSource::new(core::time::Duration::from_secs(duration));
