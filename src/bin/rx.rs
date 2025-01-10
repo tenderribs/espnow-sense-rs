@@ -3,15 +3,15 @@
 
 use alloc::{format, sync::Arc};
 use chrono::{Datelike, NaiveDateTime, Timelike};
-use core::cell::RefCell;
+use core::{cell::RefCell, fmt::Display};
 use critical_section::Mutex;
-// use display_interface_spi::SPIInterface;
+use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     pubsub::{self, PubSubChannel},
 };
-// use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
 use embedded_hal_bus::spi::CriticalSectionDevice;
 use embedded_sdmmc::{Mode, SdCard, VolumeIdx, VolumeManager};
 use esp_backtrace as _;
@@ -27,11 +27,11 @@ use esp_println::println;
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rx_rtc_time;
 use heapless::{FnvIndexMap, Vec};
-// use mipidsi::{
-//     models::ST7789,
-//     options::{ColorInversion, Orientation, Rotation},
-//     Builder,
-// };
+use mipidsi::{
+    models::ST7789,
+    options::{ColorInversion, Orientation, Rotation},
+    Builder,
+};
 use static_cell::StaticCell;
 
 type SpiDevice<'a> =
@@ -64,9 +64,11 @@ async fn main(spawner: Spawner) {
 
     let sd_cs = Output::new(peripherals.GPIO4, Level::High);
     let lcd_cs = Output::new(peripherals.GPIO14, Level::High);
-    // let lcd_dc = Output::new(peripherals.GPIO15, Level::High);
-    // let lcd_rst = Output::new(peripherals.GPIO21, Level::High);
-    // let mut lcd_bl = Output::new(peripherals.GPIO22, Level::Low);
+    let lcd_pins = LcdPins {
+        dc: Output::new(peripherals.GPIO15, Level::High),
+        rst: Output::new(peripherals.GPIO21, Level::High),
+        bl: Output::new(peripherals.GPIO22, Level::Low),
+    };
 
     // init RTC
     let rtc: Arc<Rtc<'static>> = Arc::new(Rtc::new(peripherals.LPWR));
@@ -103,14 +105,14 @@ async fn main(spawner: Spawner) {
     let spi_bus = SPI_BUS.init(Mutex::new(RefCell::new(spi_bus)));
 
     let sd_spi_dev = CriticalSectionDevice::new(
-        unsafe { &*core::ptr::addr_of!(spi_bus) }, // unsafe justifyable because StaticCell guarantees lifetime
+        unsafe { &*core::ptr::addr_of!(spi_bus) }, // unsafe is justifyable because StaticCell guarantees static lifetime
         sd_cs,
         delay,
     )
     .unwrap();
 
     let lcd_spi_dev = CriticalSectionDevice::new(
-        unsafe { &*core::ptr::addr_of!(spi_bus) }, // unsafe justifyable because StaticCell guarantees lifetime
+        unsafe { &*core::ptr::addr_of!(spi_bus) }, // unsafe is justifyable because StaticCell guarantees static lifetime
         lcd_cs,
         delay,
     )
@@ -128,11 +130,11 @@ async fn main(spawner: Spawner) {
 
     let pub0 = CHANNEL.publisher().unwrap();
 
-    spawner.spawn(display_task(lcd_spi_dev)).ok();
-    spawner
-        .spawn(sd_card_task(sd_spi_dev, delay, Arc::clone(&rtc)))
-        .ok();
+    // start background tasks
+    spawner.must_spawn(lcd_task(lcd_spi_dev, lcd_pins, delay));
+    spawner.must_spawn(sd_card_task(sd_spi_dev, delay, Arc::clone(&rtc)));
 
+    // enter main foreground loop
     loop {
         let recv = esp_now.receive_async().await;
 
@@ -157,17 +159,29 @@ async fn main(spawner: Spawner) {
     }
 }
 
+struct LcdPins<'a> {
+    dc: Output<'a>,
+    rst: Output<'a>,
+    bl: Output<'a>,
+}
+
 #[embassy_executor::task]
-async fn display_task(spi_dev: SpiDevice<'static>) {
+async fn lcd_task(
+    spi_dev: SpiDevice<'static>,
+    mut pins: LcdPins<'static>,
+    mut delay: Delay,
+) {
     println!("starting display task");
-    // let di = SPIInterface::new(spi_dev, lcd_dc);
-    // let mut display = Builder::new(ST7789, di)
-    //     .reset_pin(lcd_rst)
-    //     .invert_colors(ColorInversion::Normal)
-    //     .orientation(Orientation::default().rotate(Rotation::Deg270))
-    //     .init(&mut delay)
-    //     .expect("Cannot init display");
-    // display.clear(Rgb565::WHITE).unwrap();
+    let di = SPIInterface::new(spi_dev, pins.dc);
+    let mut display = Builder::new(ST7789, di)
+        .reset_pin(pins.rst)
+        .invert_colors(ColorInversion::Normal)
+        .orientation(Orientation::default().rotate(Rotation::Deg270))
+        .init(&mut delay)
+        .expect("Cannot init display");
+
+    display.clear(Rgb565::WHITE).unwrap();
+    pins.bl.set_high();
 
     type Points = Vec<Measurement, 50>;
 
