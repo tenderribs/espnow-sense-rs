@@ -22,7 +22,7 @@ const SLEEP_DURATION_S: u64 = 5;
 
 // extended deep sleep config during overnight stop
 const UTC_DIFF: f32 = 1.0; // timezone diff to UTC. in CH should be +1 or +2, in AU should be +9.5 or +10.5
-const BEDTIME_HR: f32 = 20.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
+const BEDTIME_HR: f32 = 23.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
 const WAKEUP_HR: f32 = 6.5; // when to wake up from deep sleep, is timezone aware
 
 // validate specified configuration
@@ -80,9 +80,11 @@ fn main() -> ! {
 
     // read temperature value in single shot mode
     if let Ok(temperature) = tsensor.single_shot(Repeatability::High) {
+        let temperature = temperature.as_celsius() as f32;
+
         // broadcast the message
         let _ = esp_now
-            .send(&BROADCAST_ADDRESS, &temperature.as_celsius().to_le_bytes())
+            .send(&BROADCAST_ADDRESS, &temperature.to_le_bytes())
             .unwrap()
             .wait();
     }
@@ -95,8 +97,9 @@ fn main() -> ! {
 }
 
 fn enter_deep_sleep(mut rtc: Rtc) {
-    let ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
-    let duration = ds.sleep_duration(rtc.current_time().time());
+    let _ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
+    // let duration = ds.sleep_duration(rtc.current_time().time());
+    let duration = 5;
 
     let wake_src =
         TimerWakeupSource::new(core::time::Duration::from_secs(duration));

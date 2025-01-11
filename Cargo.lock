@@ -762,6 +762,7 @@ dependencies = [
  "ds323x",
  "embassy-executor",
  "embassy-net",
+ "embassy-sync 0.6.1",
  "embassy-time",
  "embedded-graphics",
  "embedded-hal 1.0.0",
