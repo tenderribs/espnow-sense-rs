@@ -3,7 +3,7 @@
 
 use alloc::{format, sync::Arc};
 use chrono::{Datelike, NaiveDateTime, Timelike};
-use core::{cell::RefCell, fmt::Display};
+use core::cell::RefCell;
 use critical_section::Mutex;
 use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
@@ -26,7 +26,6 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rx_rtc_time;
-use heapless::{FnvIndexMap, Vec};
 use mipidsi::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
@@ -159,12 +158,6 @@ async fn main(spawner: Spawner) {
     }
 }
 
-struct LcdPins<'a> {
-    dc: Output<'a>,
-    rst: Output<'a>,
-    bl: Output<'a>,
-}
-
 #[embassy_executor::task]
 async fn lcd_task(
     spi_dev: SpiDevice<'static>,
@@ -182,15 +175,6 @@ async fn lcd_task(
 
     display.clear(Rgb565::WHITE).unwrap();
     pins.bl.set_high();
-
-    type Points = Vec<Measurement, 50>;
-
-    // create hashmap to store 50 measurements per TX device
-    let mut ds: FnvIndexMap<[u8; 6], Points, 4> = FnvIndexMap::new();
-    assert!(TX_DEVS.len() < 4);
-    TX_DEVS.iter().for_each(|&txdev| {
-        ds.insert(txdev, Points::new()).unwrap();
-    });
 
     let mut sub = CHANNEL.subscriber().unwrap();
     loop {
@@ -283,16 +267,8 @@ struct Measurement {
     src_addr: [u8; 6],
 }
 
-struct PlotPoint {
-    timestamp: NaiveDateTime,
-    value: f32,
-}
-
-impl From<Measurement> for PlotPoint {
-    fn from(m: Measurement) -> Self {
-        Self {
-            timestamp: m.timestamp,
-            value: m.value,
-        }
-    }
+struct LcdPins<'a> {
+    dc: Output<'a>,
+    rst: Output<'a>,
+    bl: Output<'a>,
 }

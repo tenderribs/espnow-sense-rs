@@ -30,7 +30,6 @@ esp-wifi = { version = "0.11.0", default-features = false, features = [
     "esp-alloc",
     "log",
 ] }
-heapless = { version = "0.8.0", default-features = false }
 smoltcp = { version = "0.11.0", default-features = false, features = [
     "medium-ethernet",
     "proto-dhcpv4",

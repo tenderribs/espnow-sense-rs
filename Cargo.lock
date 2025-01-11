@@ -778,7 +778,6 @@ dependencies = [
  "esp-println",
  "esp-storage",
  "esp-wifi",
- "heapless",
  "log",
  "mipidsi",
  "sensirion-rht",
