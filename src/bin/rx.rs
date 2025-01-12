@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-use alloc::{format, sync::Arc};
+use alloc::{format, string::String, sync::Arc};
 use chrono::{Datelike, NaiveDateTime, Timelike};
-use core::{cell::RefCell, fmt::Display};
+use core::cell::RefCell;
 use critical_section::Mutex;
 use display_interface_spi::SPIInterface;
 use embassy_executor::Spawner;
@@ -11,7 +11,16 @@ use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     pubsub::{self, PubSubChannel},
 };
-use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
+use embedded_graphics::{
+    mono_font::{
+        ascii::{FONT_6X10, FONT_8X13},
+        iso_8859_13::FONT_10X20,
+        MonoTextStyle,
+    },
+    pixelcolor::Rgb565,
+    prelude::*,
+    text::Text,
+};
 use embedded_hal_bus::spi::CriticalSectionDevice;
 use embedded_sdmmc::{Mode, SdCard, VolumeIdx, VolumeManager};
 use esp_backtrace as _;
@@ -26,7 +35,7 @@ use esp_hal::{
 use esp_println::println;
 use esp_wifi::esp_now::EspNow;
 use espnow_sense_rs::set_rx_rtc_time;
-use heapless::{FnvIndexMap, Vec};
+use heapless::FnvIndexMap;
 use mipidsi::{
     models::ST7789,
     options::{ColorInversion, Orientation, Rotation},
@@ -39,17 +48,26 @@ type SpiDevice<'a> =
 
 extern crate alloc;
 
-static CHANNEL: MeasChannel = MeasChannel::new();
+static CHANNEL: Channel = Channel::new();
 static SPI_BUS: StaticCell<Mutex<RefCell<Spi<'static, esp_hal::Async>>>> =
     StaticCell::new();
 
-const TX_DEVS: [[u8; 6]; 3] = [
-    [0x54, 0x32, 0x04, 0x33, 0x69, 0x90], // 54:32:04:33:69:90
-    [0x54, 0x32, 0x04, 0x33, 0x6b, 0x04], // 54:32:04:33:6b:04
-    [0x54, 0x32, 0x04, 0x33, 0x66, 0x3c], // 54:32:04:33:66:3c
+const TX_DEVS: [TxDevice; 3] = [
+    TxDevice {
+        name: "Dev1",
+        mac_addr: [0x54, 0x32, 0x04, 0x33, 0x69, 0x90],
+    },
+    TxDevice {
+        name: "Dev2",
+        mac_addr: [0x54, 0x32, 0x04, 0x33, 0x6b, 0x04],
+    },
+    TxDevice {
+        name: "Dev3",
+        mac_addr: [0x54, 0x32, 0x04, 0x33, 0x66, 0x3c],
+    },
 ];
 
-type MeasChannel = PubSubChannel<CriticalSectionRawMutex, Measurement, 4, 2, 1>;
+type Channel = PubSubChannel<CriticalSectionRawMutex, Message, 4, 2, 1>;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -138,31 +156,27 @@ async fn main(spawner: Spawner) {
     loop {
         let recv = esp_now.receive_async().await;
 
-        // only process comms from whitelisted TX devices
-        if !TX_DEVS.iter().any(|&txdev| txdev == recv.info.src_address) {
-            println!("rejecting message");
+        if !TX_DEVS
+            .iter()
+            .any(|txd| txd.mac_addr == recv.info.src_address)
+        {
             continue;
         }
 
         if let Ok(bytes) = recv.data().try_into() {
             let value = f32::from_le_bytes(bytes);
-            println!("parsed bytes as f32");
 
-            let meas = Measurement {
-                timestamp: rtc.current_time(),
-                src_addr: recv.info.src_address,
-                value,
+            let msg = Message {
+                meas: Measurement {
+                    timestamp: rtc.current_time(),
+                    value,
+                },
+                mac_addr: recv.info.src_address,
             };
 
-            pub0.publish_immediate(meas);
+            pub0.publish_immediate(msg);
         }
     }
-}
-
-struct LcdPins<'a> {
-    dc: Output<'a>,
-    rst: Output<'a>,
-    bl: Output<'a>,
 }
 
 #[embassy_executor::task]
@@ -171,32 +185,58 @@ async fn lcd_task(
     mut pins: LcdPins<'static>,
     mut delay: Delay,
 ) {
-    println!("starting display task");
     let di = SPIInterface::new(spi_dev, pins.dc);
     let mut display = Builder::new(ST7789, di)
         .reset_pin(pins.rst)
-        .invert_colors(ColorInversion::Normal)
+        .invert_colors(ColorInversion::Inverted)
         .orientation(Orientation::default().rotate(Rotation::Deg270))
         .init(&mut delay)
         .expect("Cannot init display");
 
-    display.clear(Rgb565::WHITE).unwrap();
+    display.clear(Rgb565::BLACK).unwrap();
     pins.bl.set_high();
 
-    type Points = Vec<Measurement, 50>;
+    let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 
-    // create hashmap to store 50 measurements per TX device
-    let mut ds: FnvIndexMap<[u8; 6], Points, 4> = FnvIndexMap::new();
-    assert!(TX_DEVS.len() < 4);
-    TX_DEVS.iter().for_each(|&txdev| {
-        ds.insert(txdev, Points::new()).unwrap();
+    let mut history = FnvIndexMap::<[u8; 6], Option<NaiveDateTime>, 4>::new();
+    TX_DEVS.iter().for_each(|txd| {
+        history
+            .insert(txd.mac_addr, None)
+            .expect("unable to init history");
     });
 
     let mut sub = CHANNEL.subscriber().unwrap();
+
     loop {
-        if let pubsub::WaitResult::Message(_meas) = sub.next_message().await {
-            // process message
-            println!("received value in display task");
+        if let pubsub::WaitResult::Message(msg) = sub.next_message().await {
+            // update last seen timestamp
+            if let Some(last_seen) = history.get_mut(&msg.mac_addr) {
+                *last_seen = Some(msg.meas.timestamp)
+            }
+        }
+
+        display.clear(Rgb565::BLACK).unwrap();
+
+        // update the screen
+        for (i, (mac_addr, last_seen)) in history.iter().enumerate() {
+            // find human readable name defined in TX_DEVS
+            let name =
+                match TX_DEVS.iter().find(|txd| txd.mac_addr == *mac_addr) {
+                    Some(txd) => txd.name,
+                    _ => continue,
+                };
+
+            // create human readable string of date
+            let seen = match last_seen {
+                Some(t) => format!("{}", t.and_utc().format("%m-%d %H:%M UTC")),
+                None => String::from("unavailable"),
+            };
+
+            let contents = format!("{}: {}", name, seen);
+
+            Text::new(&contents[..], Point::new(20, i as i32 * 20 + 60), style)
+                .draw(&mut display)
+                .unwrap();
         }
     }
 }
@@ -224,21 +264,16 @@ async fn sd_card_task(
         .expect("Cannot open CSV file for appending");
 
     loop {
-        if let pubsub::WaitResult::Message(meas) = sub.next_message().await {
-            let a = meas.src_addr;
-            let src_addr = format!(
-                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                a[0], a[1], a[2], a[3], a[4], a[5]
-            );
+        if let pubsub::WaitResult::Message(msg) = sub.next_message().await {
+            // let a = meas.tx_dev.mac_addr;
+            let src_addr = pretty_mac(msg.mac_addr);
 
             let line = format!(
                 "{}, {}, {}\r\n",
-                meas.timestamp.and_utc().to_rfc3339(),
+                msg.meas.timestamp.and_utc().to_rfc3339(),
                 src_addr,
-                meas.value
+                msg.meas.value
             );
-
-            println!("received value in sd card task");
 
             // append line
             if let Ok(()) = file.seek_from_end(0) {
@@ -248,6 +283,13 @@ async fn sd_card_task(
             }
         }
     }
+}
+
+fn pretty_mac(addr: [u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]
+    )
 }
 
 // shadow the Rtc struct to implement the TimeSource trait.
@@ -277,22 +319,24 @@ impl<'a> embedded_sdmmc::TimeSource for SdRtc<'a> {
 }
 
 #[derive(Clone, Debug)]
+struct Message {
+    mac_addr: [u8; 6],
+    meas: Measurement,
+}
+
+#[derive(Clone, Debug)]
 struct Measurement {
     timestamp: NaiveDateTime,
     value: f32,
-    src_addr: [u8; 6],
 }
 
-struct PlotPoint {
-    timestamp: NaiveDateTime,
-    value: f32,
+struct TxDevice {
+    name: &'static str,
+    mac_addr: [u8; 6],
 }
 
-impl From<Measurement> for PlotPoint {
-    fn from(m: Measurement) -> Self {
-        Self {
-            timestamp: m.timestamp,
-            value: m.value,
-        }
-    }
+struct LcdPins<'a> {
+    dc: Output<'a>,
+    rst: Output<'a>,
+    bl: Output<'a>,
 }
