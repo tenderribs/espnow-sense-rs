@@ -58,6 +58,7 @@ display-interface-spi = "0.5.0"
 embedded-graphics = "0.8.1"
 ds323x = "0.5.1"
 embassy-sync = "0.6.1"
+heapless = "0.8.0"
 
 [build-dependencies]
 chrono = { version = "0.4.39", default-features = false, features = ["now"] }
