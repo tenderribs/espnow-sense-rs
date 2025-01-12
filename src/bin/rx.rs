@@ -12,11 +12,7 @@ use embassy_sync::{
     pubsub::{self, PubSubChannel},
 };
 use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_6X10, FONT_8X13},
-        iso_8859_13::FONT_10X20,
-        MonoTextStyle,
-    },
+    mono_font::{iso_8859_13::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb565,
     prelude::*,
     text::Text,
