@@ -18,12 +18,12 @@ use sensirion_rht::{Addr, Device, Repeatability};
 use espnow_sense_rs::{set_tx_rtc_time, DeepSleep};
 
 // default interval between measurements
-const SLEEP_DURATION_S: u64 = 5;
+const SLEEP_DURATION_S: u64 = 10 * 60;
 
 // extended deep sleep config during overnight stop
 const UTC_DIFF: f32 = 1.0; // timezone diff to UTC. in CH should be +1 or +2, in AU should be +9.5 or +10.5
-const BEDTIME_HR: f32 = 23.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
-const WAKEUP_HR: f32 = 6.5; // when to wake up from deep sleep, is timezone aware
+const BEDTIME_HR: f32 = 20.0; // when it starts. ex. 21.5 is 09:30 PM, is timezone aware
+const WAKEUP_HR: f32 = 5.5; // when to wake up from deep sleep, is timezone aware
 
 // validate specified configuration
 const _: () = {
@@ -97,9 +97,8 @@ fn main() -> ! {
 }
 
 fn enter_deep_sleep(mut rtc: Rtc) {
-    let _ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
-    // let duration = ds.sleep_duration(rtc.current_time().time());
-    let duration = 5;
+    let ds = DeepSleep::new(BEDTIME_HR, WAKEUP_HR, UTC_DIFF, SLEEP_DURATION_S);
+    let duration = ds.sleep_duration(rtc.current_time().time());
 
     let wake_src =
         TimerWakeupSource::new(core::time::Duration::from_secs(duration));
